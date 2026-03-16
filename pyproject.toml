@@ -1,0 +1,28 @@
+[project]
+name = "svtplay-cli"
+version = "0.1.0"
+requires-python = ">=3.9"
+dependencies = [
+    "python-dotenv",
+    "anthropic",
+    "pydantic",
+    "click",
+    "mutagen",
+    "svtplay-dl",
+]
+
+[project.scripts]
+svtplay-meta = "svtplay.meta:main"
+svtplay-search = "svtplay.search:main"
+svtplay-episodes = "svtplay.episodes:main"
+svtplay-tmdb = "svtplay.tmdb:main"
+svtplay-download = "svtplay.download:main"
+svtplay-backfill-info = "svtplay.backfill:info"
+svtplay-backfill-apply = "svtplay.backfill:apply"
+
+[tool.hatch.build.targets.wheel]
+packages = ["svtplay"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
