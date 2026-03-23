@@ -1,30 +1,23 @@
-"""svtplay-tmdb — find the TMDB entry for an SVT Play show using LLM matching."""
+"""TMDB matching — plain functions + shared model used by download/backfill."""
 
-import json
-import os
-import sys
 from typing import Any, Dict, List, Optional
 
-import click
-from dotenv import load_dotenv
 from pydantic import BaseModel
 
-load_dotenv()
 
-
-# ─── Pydantic model ────────────────────────────────────────────────────────────
+# ─── Shared model ──────────────────────────────────────────────────────────────
 
 class TMDBMatch(BaseModel):
-    tmdb_id: Optional[int]         # None if no confident match found
+    tmdb_id: Optional[int]
     tmdb_name: Optional[str]
     original_name: Optional[str]
     first_air_date: Optional[str]
     overview: Optional[str]
-    confidence: float              # 0.0 – 1.0
-    reasoning: str                 # one-sentence explanation
+    confidence: float
+    reasoning: str
 
 
-# ─── LLM matching ─────────────────────────────────────────────────────────────
+# ─── LLM matching (shared helper) ─────────────────────────────────────────────
 
 def _llm_match(
     svt_name: str,
@@ -64,22 +57,13 @@ Pick the best match, or set tmdb_id to null if none of the candidates match.
         "input_schema": {
             "type": "object",
             "properties": {
-                "tmdb_id": {
-                    "type": ["integer", "null"],
-                    "description": "TMDB show ID, or null if no match",
-                },
+                "tmdb_id": {"type": ["integer", "null"], "description": "TMDB show ID, or null if no match"},
                 "tmdb_name": {"type": ["string", "null"], "description": "TMDB show name"},
                 "original_name": {"type": ["string", "null"], "description": "TMDB original name"},
                 "first_air_date": {"type": ["string", "null"], "description": "First air date from TMDB"},
                 "overview": {"type": ["string", "null"], "description": "TMDB show overview"},
-                "confidence": {
-                    "type": "number",
-                    "description": "Confidence of the match, 0.0 to 1.0",
-                },
-                "reasoning": {
-                    "type": "string",
-                    "description": "One sentence explaining the match decision",
-                },
+                "confidence": {"type": "number", "description": "Confidence of the match, 0.0 to 1.0"},
+                "reasoning": {"type": "string", "description": "One sentence explaining the match decision"},
             },
             "required": ["tmdb_id", "tmdb_name", "original_name", "first_air_date",
                          "overview", "confidence", "reasoning"],
@@ -107,72 +91,54 @@ Pick the best match, or set tmdb_id to null if none of the candidates match.
     raise RuntimeError("Claude did not return a tool_use block")
 
 
-# ─── CLI ───────────────────────────────────────────────────────────────────────
+# ─── Public plain function ─────────────────────────────────────────────────────
 
-@click.command()
-@click.argument("query")
-@click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
-@click.option("--api-key", envvar="ANTHROPIC_API_KEY", help="Anthropic API key.")
-@click.option("--tmdb-key", envvar="TMDB_API_KEY", help="TMDB API key.")
-@click.option("--no_cache", is_flag=True, help="Skip cache and force fresh lookup.")
-@click.option("--threshold", default=0.55, show_default=True, help="SVT show match threshold.")
-def main(
+def match_tmdb(
     query: str,
-    as_json: bool,
-    api_key: Optional[str],
-    tmdb_key: Optional[str],
-    no_cache: bool,
-    threshold: float,
-) -> None:
-    """Find the TMDB entry for an SVT Play show using LLM-assisted matching."""
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")
+    api_key: str,
+    tmdb_key: str,
+    no_cache: bool = False,
+    threshold: float = 0.55,
+) -> Dict[str, Any]:
+    """Find the TMDB entry for an SVT Play show using LLM-assisted matching.
 
+    Returns: {query, svt_show, tmdb_match, tmdb_episodes, cached}
+    Raises ValueError on failure.
+    """
     from svtplay._svt import find_show, fetch_show_episodes
-    from svtplay._tmdb_api import search_show
+    from svtplay._tmdb_api import search_show, get_all_episodes
     from svtplay._cache import get as cache_get, put as cache_put, get_svt_episodes, patch_svt_episodes
 
-    # Validate API keys
-    if not tmdb_key:
-        _err(as_json, "TMDB_API_KEY not set. Use --tmdb-key or set the env var.")
-        sys.exit(1)
-    if not api_key:
-        _err(as_json, "ANTHROPIC_API_KEY not set. Use --api-key or set the env var.")
-        sys.exit(1)
-
-    # Step 1: find SVT show
+    # Find SVT show
     result = find_show(query, match_threshold=threshold, shows_only=True)
     match = result.get("match")
     if not match:
-        _err(as_json, f"No SVT Play show found for '{query}'.")
-        sys.exit(1)
+        raise ValueError(f"No SVT Play show found for '{query}'.")
 
-    svt_name = match.get("name", "")
-    svt_url = match.get("url", "")
-    svt_description = match.get("description") or match.get("short_description") or ""
-    svt_match_score = result.get("match_score", 0)
+    svt_name: str = match.get("name", "")
+    svt_url: str = match.get("url", "")
+    svt_description: str = match.get("description") or match.get("short_description") or ""
 
     svt_show = {
         "name": svt_name,
         "url": svt_url,
         "description": svt_description,
-        "match_score": round(svt_match_score, 3),
+        "match_score": round(result.get("match_score", 0), 3),
     }
 
-    # Step 2: check cache
+    # Check cache
     if not no_cache:
         cached = cache_get(svt_name)
         if cached:
-            tmdb_match = cached.get("tmdb_match")
-            tmdb_episodes = cached.get("tmdb_episodes")
-            if as_json:
-                _out_json({"query": query, "svt_show": svt_show, "tmdb_match": tmdb_match,
-                           "tmdb_episodes": tmdb_episodes, "cached": True})
-            else:
-                _print_human(svt_show, tmdb_match, tmdb_episodes, cached=True)
-            return
+            return {
+                "query": query,
+                "svt_show": svt_show,
+                "tmdb_match": cached.get("tmdb_match"),
+                "tmdb_episodes": cached.get("tmdb_episodes"),
+                "cached": True,
+            }
 
-    # Step 3: fetch SVT episodes for context (cache first, then live)
+    # Fetch SVT episodes for LLM context
     all_svt_episodes = get_svt_episodes(svt_name)
     if all_svt_episodes is None:
         try:
@@ -181,14 +147,13 @@ def main(
             all_svt_episodes = []
         if all_svt_episodes:
             patch_svt_episodes(svt_name, all_svt_episodes)
-    svt_episode_names = [ep.get("name", "") for ep in all_svt_episodes[:5] if ep.get("name")]
+    svt_episode_names = [ep.get("name", "") for ep in (all_svt_episodes or [])[:5] if ep.get("name")]
 
-    # Step 4: search TMDB
+    # Search TMDB
     try:
         candidates = search_show(svt_name, tmdb_key)[:10]
     except Exception as exc:
-        _err(as_json, f"TMDB search failed: {exc}")
-        sys.exit(1)
+        raise ValueError(f"TMDB search failed: {exc}") from exc
 
     if not candidates:
         tmdb_match_obj = TMDBMatch(
@@ -199,81 +164,34 @@ def main(
     elif len(candidates) == 1:
         c = candidates[0]
         tmdb_match_obj = TMDBMatch(
-            tmdb_id=c.get("id"),
-            tmdb_name=c.get("name"),
-            original_name=c.get("original_name"),
-            first_air_date=c.get("first_air_date"),
-            overview=c.get("overview"),
-            confidence=1.0,
+            tmdb_id=c.get("id"), tmdb_name=c.get("name"),
+            original_name=c.get("original_name"), first_air_date=c.get("first_air_date"),
+            overview=c.get("overview"), confidence=1.0,
             reasoning="Only one TMDB result returned; selected automatically.",
         )
     else:
-        # Step 5: LLM match
-        if not as_json:
-            print(f"Asking Claude to match '{svt_name}' against {len(candidates)} TMDB candidates...", file=sys.stderr)
         try:
             tmdb_match_obj = _llm_match(svt_name, svt_description, svt_episode_names, candidates, api_key)
         except Exception as exc:
-            _err(as_json, f"LLM matching failed: {exc}")
-            sys.exit(1)
+            raise ValueError(f"LLM matching failed: {exc}") from exc
 
     tmdb_match = tmdb_match_obj.model_dump()
 
-    # Step 6: fetch all TMDB episodes if match is confident enough
+    # Fetch all TMDB episodes if confident enough
     tmdb_episodes = None
     tmdb_id = tmdb_match.get("tmdb_id")
     if tmdb_id and tmdb_match.get("confidence", 0) >= 0.90:
-        if not as_json:
-            print(f"Fetching all TMDB episodes for show id={tmdb_id}...", file=sys.stderr)
         try:
-            from svtplay._tmdb_api import get_all_episodes
             tmdb_episodes = get_all_episodes(tmdb_id, tmdb_key)
-        except Exception as exc:
-            if not as_json:
-                print(f"Warning: could not fetch TMDB episodes: {exc}", file=sys.stderr)
+        except Exception:
+            pass
 
-    # Step 7: cache result
     cache_put(svt_name, {"svt_name": svt_name, "tmdb_match": tmdb_match, "tmdb_episodes": tmdb_episodes})
 
-    # Step 8: output
-    if as_json:
-        _out_json({"query": query, "svt_show": svt_show, "tmdb_match": tmdb_match,
-                   "tmdb_episodes": tmdb_episodes, "cached": False})
-    else:
-        _print_human(svt_show, tmdb_match, tmdb_episodes, cached=False)
-
-
-# ─── Output helpers ────────────────────────────────────────────────────────────
-
-def _out_json(data: Dict[str, Any]) -> None:
-    json.dump(data, sys.stdout, ensure_ascii=False, indent=2)
-    print()
-
-
-def _err(as_json: bool, msg: str) -> None:
-    if as_json:
-        json.dump({"error": msg}, sys.stdout, ensure_ascii=False)
-        print()
-    else:
-        print(f"Error: {msg}", file=sys.stderr)
-
-
-def _print_human(svt_show: Dict, tmdb_match: Optional[Dict], tmdb_episodes: Optional[List], cached: bool) -> None:
-    cache_tag = "  (cached)" if cached else ""
-    print(f"SVT show : {svt_show['name']}  ({svt_show['url']})")
-    if not tmdb_match or tmdb_match.get("tmdb_id") is None:
-        print("TMDB     : no match found")
-        return
-    ep_count = f"  {len(tmdb_episodes)} episodes" if tmdb_episodes else ""
-    print(f"TMDB     : {tmdb_match['tmdb_name']}  (id={tmdb_match['tmdb_id']}){ep_count}{cache_tag}")
-    if tmdb_match.get("original_name") and tmdb_match["original_name"] != tmdb_match["tmdb_name"]:
-        print(f"Original : {tmdb_match['original_name']}")
-    if tmdb_match.get("first_air_date"):
-        print(f"First air: {tmdb_match['first_air_date']}")
-    print(f"Confidence: {tmdb_match['confidence']:.0%}")
-    print(f"Reasoning: {tmdb_match['reasoning']}")
-    if tmdb_match.get("overview"):
-        overview = tmdb_match["overview"]
-        if len(overview) > 120:
-            overview = overview[:117] + "..."
-        print(f"Overview : {overview}")
+    return {
+        "query": query,
+        "svt_show": svt_show,
+        "tmdb_match": tmdb_match,
+        "tmdb_episodes": tmdb_episodes,
+        "cached": False,
+    }

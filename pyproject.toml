@@ -12,13 +12,16 @@ dependencies = [
 ]
 
 [project.scripts]
-svtplay-meta = "svtplay.meta:main"
-svtplay-search = "svtplay.search:main"
-svtplay-episodes = "svtplay.episodes:main"
-svtplay-tmdb = "svtplay.tmdb:main"
-svtplay-download = "svtplay.download:main"
-svtplay-backfill-info = "svtplay.backfill:info"
-svtplay-backfill-apply = "svtplay.backfill:apply"
+svtplay-download-missing = "svtplay.cli.download_missing:main"
+svtplay-scan = "svtplay.cli.scan:main"
+svtplay-diff = "svtplay.cli.diff:main"
+svtplay-meta = "svtplay.cli.meta:main"
+svtplay-backfill-info = "svtplay.cli.backfill:info"
+svtplay-backfill-apply = "svtplay.cli.backfill:apply"
+svtplay-search = "svtplay.cli.search:main"
+svtplay-episodes = "svtplay.cli.episodes:main"
+svtplay-tmdb = "svtplay.cli.tmdb:main"
+svtplay-download = "svtplay.cli.download:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["svtplay"]

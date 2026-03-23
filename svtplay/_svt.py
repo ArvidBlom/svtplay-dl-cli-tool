@@ -174,35 +174,54 @@ def find_show(
     }
 
 
+_EPISODES_GQL = """
+{
+  detailsPageByPath(path: %s) {
+    modules {
+      selection {
+        selectionType
+        items {
+          heading
+          subHeading
+          description
+          badge { text }
+          images { wide { id changed } }
+          upcomingOverlay { heading }
+          item {
+            __typename
+            ... on Episode {
+              svtId
+              validFromFormatted
+              urls { svtplay }
+            }
+          }
+          analytics { json }
+        }
+      }
+    }
+  }
+}
+"""
+
+
 def fetch_show_episodes(show_url: str) -> List[Dict[str, Any]]:
-    """Scrape a SVT Play show page and return all episodes (no recommendations)."""
+    """Fetch all episodes for a show via the SVT Play GraphQL API."""
+    # Extract path from URL (e.g. "https://www.svtplay.se/bluey" → "/bluey")
+    path = show_url.replace("https://www.svtplay.se", "") or "/"
+    if not path.startswith("/"):
+        path = "/" + path
+
     try:
-        html = _http_get(show_url)
+        gql = _EPISODES_GQL % json.dumps(path)
+        data = _graphql(gql)
     except Exception:
         return []
 
-    m = _NEXT_DATA_RE.search(html)
-    if not m:
-        return []
-    try:
-        next_data = json.loads(m.group(1))
-    except json.JSONDecodeError:
+    page = (data.get("data") or {}).get("detailsPageByPath")
+    if not page:
         return []
 
-    urql_state = (next_data.get("props") or {}).get("urqlState") or {}
-    modules: List[Dict] = []
-    for entry_raw in urql_state.values():
-        if not isinstance(entry_raw, dict) or "data" not in entry_raw:
-            continue
-        try:
-            entry = json.loads(entry_raw["data"])
-        except (json.JSONDecodeError, TypeError):
-            continue
-        page = entry.get("detailsPageByPath")
-        if page and isinstance(page.get("modules"), list):
-            modules = page["modules"]
-            break
-
+    modules = page.get("modules") or []
     episodes: List[Dict[str, Any]] = []
     seen: set = set()
 
@@ -215,23 +234,24 @@ def fetch_show_episodes(show_url: str) -> List[Dict[str, Any]]:
         for item in selection.get("items") or []:
             if not isinstance(item, dict):
                 continue
-            svt_id = (item.get("analytics") or {}).get("json", {}).get("svtId")
+            inner = item.get("item") or {}
+            if inner.get("__typename") != "Episode":
+                continue
+            svt_id = inner.get("svtId")
             if not svt_id or svt_id in seen:
                 continue
             seen.add(svt_id)
 
-            inner = item.get("item") or {}
             canonical = (inner.get("urls") or {}).get("svtplay")
             wide = (item.get("images") or {}).get("wide") or {}
             sub_heading = item.get("subHeading") or ""
-            duration = _parse_duration(sub_heading)
 
             episodes.append({
                 "svt_id": svt_id,
                 "name": item.get("heading") or "",
                 "description": item.get("description") or None,
                 "sub_heading": sub_heading,
-                "duration_seconds": duration,
+                "duration_seconds": _parse_duration(sub_heading),
                 "url": f"https://www.svtplay.se/video/{svt_id}",
                 "canonical_url": f"https://www.svtplay.se{canonical}" if canonical else None,
                 "air_date": inner.get("validFromFormatted"),

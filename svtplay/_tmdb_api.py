@@ -5,6 +5,7 @@ Requires a TMDB API key (v3).
 """
 
 import json
+import time
 import urllib.parse
 import urllib.request
 from typing import Any, Dict, List
@@ -18,9 +19,10 @@ def _still_url(path: str | None) -> str | None:
     return f"{_IMAGE_BASE}{path}" if path else None
 
 
-def _get(path: str, params: Dict[str, str], timeout: int = 10) -> Dict[str, Any]:
+def _get(path: str, params: Dict[str, str], timeout: int = 15) -> Dict[str, Any]:
     url = f"{_BASE}{path}?{urllib.parse.urlencode(params)}"
     req = urllib.request.Request(url, headers=_HEADERS)
+    time.sleep(0.3)
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read().decode("utf-8"))
 

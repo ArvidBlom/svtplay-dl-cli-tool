@@ -1,8 +1,0 @@
-__pycache__/
-*.pyc
-*.pyo
-.env
-.svtplay-cache/
-*.egg-info/
-dist/
-.venv/
